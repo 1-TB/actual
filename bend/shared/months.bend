@@ -18,8 +18,9 @@
 # - `firstDayOfWeekIdx` (a string preference, '0' to '6') is a Nat, 0 = Sunday.
 # - `format` knows the English (en-US) names only, and the tokens listed above
 #   `Months.format`. `memoizeOne` is dropped: the defs are pure.
-# - The `get*Regex` defs answer the source of the RegExp the original builds;
-#   `Months.regex_test` runs such a source (see there for the subset).
+# - The `get*Regex` defs answer the pattern text the original hands to
+#   `new RegExp`; `Months.regex_test` runs such a pattern (see there for the
+#   subset).
 import Base
 import ../lib/core.bend as C
 import ../lib/text.bend as T
@@ -503,10 +504,8 @@ def Months.prepend(pre: String, m: Maybe<&2, String>) -> Maybe<&2, String>:
       Some{pre ++ s}
 
 # The en-US long date formats: P, PP, PPP, PPPP.
-def Months.expand.long(run: Nat) -> String:
+def Months.expand.date(run: Nat) -> String:
   match run:
-    case 0n:
-      ""
     case 1n:
       "MM/dd/yyyy"
     case 2n:
@@ -516,28 +515,56 @@ def Months.expand.long(run: Nat) -> String:
     case other:
       "EEEE, MMMM do, y"
 
-# date-fns' first pass: every run of P outside quotes becomes its long format.
-# `run` counts the P's read so far. None for the time formats (p).
-def Months.expand(s: String, quoted: Bool, +run: Nat) -> Maybe<&2, String>:
+# The en-US long time formats: p, pp. The longer ones name the time zone,
+# which is not ported (`z` answers None).
+def Months.expand.time(run: Nat) -> String:
+  match run:
+    case 1n:
+      "h:mm a"
+    case 2n:
+      "h:mm:ss a"
+    case 3n:
+      "h:mm:ss a z"
+    case other:
+      "h:mm:ss a zzzz"
+
+# A run of `dates` P's followed by `times` p's, either of which may be none.
+def Months.expand.long(dates: Nat, times: Nat) -> String:
+  match dates times:
+    case 0n 0n:
+      ""
+    case 0n n:
+      Months.expand.time(n)
+    case +d 0n:
+      Months.expand.date(d)
+    case +d n:
+      Months.expand.date(d) ++ Bool.pick(String, Nat.is_ge(d, 3n), " 'at' ", ", ") ++
+        Months.expand.time(n)
+
+# date-fns' first pass: outside quotes every run of P, of p, or of P then p
+# becomes its long format. `dates` and `times` count the P's and p's read.
+def Months.expand(s: String, quoted: Bool, +dates: Nat, +times: Nat) -> Maybe<&2, String>:
   match s quoted:
     case SNil{} _:
-      Some{Months.expand.long(run)}
+      Some{Months.expand.long(dates, times)}
     case SCon{'\'', SCon{'\'', t}} True{}:
-      Months.prepend("''", Months.expand(t, True{}, 0n))
+      Months.prepend("''", Months.expand(t, True{}, 0n, 0n))
     case SCon{'\'', SCon{'\'', t}} False{}:
-      Months.prepend(Months.expand.long(run) ++ "''", Months.expand(t, False{}, 0n))
+      Months.prepend(Months.expand.long(dates, times) ++ "''", Months.expand(t, False{}, 0n, 0n))
     case SCon{'\'', t} True{}:
-      Months.prepend("'", Months.expand(t, False{}, 0n))
+      Months.prepend("'", Months.expand(t, False{}, 0n, 0n))
     case SCon{'\'', t} False{}:
-      Months.prepend(Months.expand.long(run) ++ "'", Months.expand(t, True{}, 0n))
+      Months.prepend(Months.expand.long(dates, times) ++ "'", Months.expand(t, True{}, 0n, 0n))
     case SCon{'P', t} False{}:
-      Months.expand(t, False{}, (run + 1n : Nat))
+      Months.prepend(Bool.pick(String, Nat.is_eq(times, 0n), "", Months.expand.long(dates, times)),
+        Months.expand(t, False{}, Bool.pick(Nat, Nat.is_eq(times, 0n), (dates + 1n : Nat), 1n), 0n))
     case SCon{'p', t} False{}:
-      None{}
+      Months.expand(t, False{}, dates, (times + 1n : Nat))
     case SCon{h, t} True{}:
-      Months.prepend(SCon{h, SNil{}}, Months.expand(t, True{}, 0n))
+      Months.prepend(SCon{h, SNil{}}, Months.expand(t, True{}, 0n, 0n))
     case SCon{h, t} False{}:
-      Months.prepend(Months.expand.long(run) ++ SCon{h, SNil{}}, Months.expand(t, False{}, 0n))
+      Months.prepend(Months.expand.long(dates, times) ++ SCon{h, SNil{}},
+        Months.expand(t, False{}, 0n, 0n))
 
 def Months.format.go(f: Nat, s: String, +days: Nat) -> Maybe<&2, String>:
   match f s:
@@ -562,13 +589,16 @@ def Months.format.long(+fmt: String, days: Nat) -> Maybe<&2, String>:
 #   Q.. q.. Qo                 quarter
 #   a..aaaaa                   PM (every date is at noon)
 #   H HH h hh m mm s ss (+o)   12, 12, 0, 0
-#   P PP PPP PPPP              long dates: 01/31/2024, Jan 31, 2024, ...
+#   P PP PPP PPPP, p pp        long dates and times: 01/31/2024, Jan 31, 2024,
+#                              12:00 PM, and their pairs such as PPp
 #   'text' and ''              quoted text and a quote; other non-letters as is
-# Any other letter answers None; date-fns throws for most of them (the rest,
-# like w, G, D, p, x, z, t, are not ported).
-def Months.format_days(days: Nat, fmt: String) -> Maybe<&2, String>:
+# Any other letter answers None. date-fns throws for the letters it does not
+# know, and for an empty format; its remaining tokens are not ported and
+# answer None as well: G u Y R w I D b B K k S X x O z t T.
+def Months.format_days(days: Nat, +fmt: String) -> Maybe<&2, String>:
   do Maybe<&2, String>:
-    long : String <- Months.expand(fmt, False{}, 0n)
+    ok : Unit <- T.Text.guard(Bool.not(String.is_empty(fmt)))
+    long : String <- Months.expand(fmt, False{}, 0n, 0n)
     Months.format.long(long, days)
 
 # ---------------------------------------------------------------------------
@@ -646,7 +676,7 @@ def Months.rx.search(s: String, +toks: List<&2, Months.Rx>) -> Bool:
       +rest = t
       Bool.or(Months.rx.at(toks, SCon{h, rest}), Months.rx.search(rest, toks))
 
-# JS `new RegExp(source).test(s)` for the sources this module builds: an
+# JS `new RegExp(source).test(s)` for the patterns this module builds: an
 # optional leading `^`, an optional final `$`, `\d{n}` and `\d{n,m}` with
 # single-digit counts, `.` for any character, and every other character for
 # itself (so a format holding other RegExp operators is not supported).
@@ -1180,7 +1210,7 @@ def Months.squeeze_first(s: String, c: Char) -> String:
 def Months.rx.day_month(s: String) -> String:
   Months.replace_runs(Months.replace_runs(s, 'd', "\\d{1,2}"), 'M', "\\d{1,2}")
 
-# The source of a RegExp finding a date written in `format` (not anchored).
+# The pattern of a RegExp finding a date written in `format` (not anchored).
 def Months.get_date_format_regex(format: String) -> String:
   Months.replace_runs(Months.rx.day_month(format), 'y', "\\d{4}")
 
