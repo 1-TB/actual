@@ -1,5 +1,6 @@
 # Text helpers shared by the ports: UTF-8 encoding, padding, digits.
 import Base
+import ./core.bend as C
 
 def Text.utf8.pick(+x: U32, one: Bool, two: Bool, three: Bool) -> List<&2, U32>:
   match one two three:
@@ -91,3 +92,43 @@ def Text.is_js_space(+x: U32) -> Bool:
   Text.within(x, 9, 13) || U32.is_eq(x, 32) || U32.is_eq(x, 160) || U32.is_eq(x, 5760) ||
     Text.within(x, 8192, 8202) || U32.is_eq(x, 8232) || U32.is_eq(x, 8233) ||
     U32.is_eq(x, 8239) || U32.is_eq(x, 8287) || U32.is_eq(x, 12288) || U32.is_eq(x, 65279)
+
+# What a byte starts when no sequence is open: the character it is by
+# itself, or nothing for a lead byte; a stray byte is U+FFFD.
+def Text.from_utf8.emit(+b: U32) -> String:
+  Bool.pick(String, (b < 128 : U32), SCon{Chr{b}, SNil{}},
+    Bool.pick(String, Text.within(b, 194, 244), SNil{}, SCon{Chr{65533}, SNil{}}))
+
+# The payload bits of a lead byte.
+def Text.from_utf8.bits(+b: U32) -> U32:
+  Bool.pick(U32, (b < 224 : U32), (b .&. 31 : U32),
+    Bool.pick(U32, (b < 240 : U32), (b .&. 15 : U32), (b .&. 7 : U32)))
+
+# The number of continuation bytes a lead byte announces; 0 otherwise.
+def Text.from_utf8.need(+b: U32) -> Nat:
+  Bool.pick(Nat, Text.within(b, 194, 223), 1n,
+    Bool.pick(Nat, Text.within(b, 224, 239), 2n,
+      Bool.pick(Nat, Text.within(b, 240, 244), 3n, 0n)))
+
+# Decodes byte by byte: `code` holds the bits read of an open sequence and
+# `need` the continuation bytes it still wants.
+def Text.from_utf8.go(bytes: List<&2, U32>, +code: U32, +need: Nat) -> String:
+  match bytes need:
+    case Nil{} 0n:
+      SNil{}
+    case Nil{} 1n+p:
+      SCon{Chr{65533}, SNil{}}
+    case Con{+b, t} 0n:
+      Text.from_utf8.emit(b) ++ Text.from_utf8.go(t, Text.from_utf8.bits(b), Text.from_utf8.need(b))
+    case Con{+b, +t} 1n+ +p:
+      C.If(String, Text.within(b, 128, 191),
+        u => Bool.pick(String, Nat.is_eq(p, 0n),
+            SCon{Chr{((code << 6n) .|. (b .&. 63) : U32)}, SNil{}}, SNil{}) ++
+          Text.from_utf8.go(t, ((code << 6n) .|. (b .&. 63) : U32), p),
+        u => SCon{Chr{65533}, Text.from_utf8.emit(b)} ++
+          Text.from_utf8.go(t, Text.from_utf8.bits(b), Text.from_utf8.need(b)))
+
+# The text of UTF-8 bytes; a malformed sequence becomes U+FFFD, as a JS
+# `TextDecoder` does.
+def Text.from_utf8(bytes: List<&2, U32>) -> String:
+  Text.from_utf8.go(bytes, 0, 0n)
