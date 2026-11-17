@@ -160,7 +160,7 @@ def Rule.percent(remaining: N.Num, value: Maybe<&2, N.Num>) -> V.Value:
       Rule.rounded(Maybe.bind(&2, N.Num, N.Num, N.Num.mul(remaining, v), p => N.Num.div(p, N.Num.from_nat(100n))))
 
 # Gives each fixed-percent part its share of what the fixed amounts left.
-def Rule.percents(actions: List<&2, Y.Action>, nt: List<&2, List<&2, V.Field>>, +remaining: N.Num) ->
+def Rule.percents(actions: List<&2, Y.Action>, +nt: List<&2, List<&2, V.Field>>, +remaining: N.Num) ->
   List<&2, List<&2, V.Field>>:
   match actions:
     case Nil{}:
@@ -180,7 +180,7 @@ def Rule.count(actions: List<&2, Y.Action>, +method: String) -> Nat:
 
 # Gives each remainder part the same amount; answers the list and, through
 # `last`, follows the highest part index.
-def Rule.remainders(actions: List<&2, Y.Action>, nt: List<&2, List<&2, V.Field>>, +amount: V.Value) ->
+def Rule.remainders(actions: List<&2, Y.Action>, +nt: List<&2, List<&2, V.Field>>, +amount: V.Value) ->
   List<&2, List<&2, V.Field>>:
   match actions:
     case Nil{}:
@@ -190,7 +190,7 @@ def Rule.remainders(actions: List<&2, Y.Action>, nt: List<&2, List<&2, V.Field>>
         Bool.pick(List<&2, List<&2, V.Field>>, Rule.method_is(a, "remainder"), Rule.set_amount(nt, Rule.part(a), amount), nt),
         amount)
 
-def Rule.last_remainder(actions: List<&2, Y.Action>, last: Nat) -> Nat:
+def Rule.last_remainder(actions: List<&2, Y.Action>, +last: Nat) -> Nat:
   match actions:
     case Nil{}:
       last
