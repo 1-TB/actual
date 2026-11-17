@@ -230,16 +230,28 @@ def Num.decimal(n: Nat, +places: Nat) -> String:
   +frac = String.reverse(Num.decimal.trim(String.reverse(String.drop(digits, cut))))
   String.take(digits, cut) ++ Bool.pick(String, String.is_empty(frac), "", "." ++ frac)
 
-# Finds the smallest k up to 15 with den dividing num * 10^k, and writes the
-# decimal; None when the fraction does not terminate that soon.
-def Num.show.go(fuel: Nat, +num: Nat, +den: Nat, +k: Nat) -> Maybe<&2, String>:
-  match fuel:
-    case 0n:
+# The fraction digits of rem/den by long division, at most `fuel` of them;
+# None when the fraction does not terminate that soon or a step would pass
+# the limit.
+def Num.show.frac(fuel: Nat, +rem: Nat, +den: Nat, done: Bool) -> Maybe<&2, String>:
+  match fuel done:
+    case _ True{}:
+      Some{SNil{}}
+    case 0n False{}:
       None{}
-    case 1n+f:
-      C.If(Maybe<&2, String>, Nat.is_eq(Nat.mod(num, den), 0n),
-        u => Some{Num.decimal(Nat.div(num, den), k)},
-        u => Maybe.bind(&2, Nat, String, Num.times(num, 10n), n => Num.show.go(f, n, den, 1n+k)))
+    case 1n+f False{}:
+      Maybe.bind(&2, Nat, String, Num.times(rem, 10n), +n =>
+        Maybe.map(&2, String, String, rest => SCon{Chr{U32.add(48, U32.from_nat(Nat.div(n, den)))}, rest},
+          Num.show.frac(f, Nat.mod(n, den), den, Nat.is_eq(Nat.mod(n, den), 0n))))
+
+def Num.show.join(whole: Nat, frac: Maybe<&2, String>) -> Maybe<&2, String>:
+  match frac:
+    case None{}:
+      None{}
+    case Some{SNil{}}:
+      Some{Nat.show(whole)}
+    case Some{digits}:
+      Some{Nat.show(whole) ++ "." ++ digits}
 
 # The number as JS prints it when it is a short terminating decimal
 # ("-3.45", "1222.45", "6"); otherwise the fraction, as "1/3".
@@ -247,4 +259,6 @@ def Num.show(a: Num) -> String:
   match a:
     case Num{neg, +num, +den}:
       Bool.pick(String, neg, "-", "") ++ Maybe.default(&2, String,
-        Num.show.go(16n, num, den, 0n), Nat.show(num) ++ "/" ++ Nat.show(den))
+        Num.show.join(Nat.div(num, den),
+          Num.show.frac(16n, Nat.mod(num, den), den, Nat.is_eq(Nat.mod(num, den), 0n))),
+        Nat.show(num) ++ "/" ++ Nat.show(den))

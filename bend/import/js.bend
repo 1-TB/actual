@@ -193,10 +193,46 @@ def Js.number.whole(neg: Bool, r: String & String) -> Maybe<&2, N.Num>:
     case Tuple{+whole, rest}:
       Js.number.frac(neg, whole, (SNil{}, rest))
 
+# The value of a digit in a radix of 2, 8 or 16.
+def Js.radix.digit(+x: U32, +radix: U32) -> Maybe<&2, U32>:
+  +d = Bool.pick(U32, Js.is_digit(x), (x - 48 : U32),
+    Bool.pick(U32, (x >= 97 : U32) && (x <= 102 : U32), (x - 87 : U32),
+      Bool.pick(U32, (x >= 65 : U32) && (x <= 70 : U32), (x - 55 : U32), 99)))
+  Bool.pick(Maybe<&2, U32>, (d < radix : U32), Some{d}, None{})
+
+def Js.radix.go(s: String, +radix: U32, +acc: Nat) -> Maybe<&2, Nat>:
+  match s:
+    case SNil{}:
+      Some{acc}
+    case SCon{Chr{x}, t}:
+      Maybe.bind(&2, U32, Nat, Js.radix.digit(x, radix), d =>
+        Js.radix.go(t, radix, (acc * U32.to_nat(radix) + U32.to_nat(d) : Nat)))
+
+# The digits after `0x`, `0o` or `0b`: at least one, and few enough to fit.
+def Js.radix(+digits: String, +radix: U32) -> Maybe<&2, N.Num>:
+  +ds = Js.zeros(digits)
+  C.If(Maybe<&2, N.Num>,
+    Bool.not(String.is_empty(digits))
+      && Nat.is_le(String.length(ds), Bool.pick(Nat, U32.is_eq(radix, 16), 11n, Bool.pick(Nat, U32.is_eq(radix, 8), 15n, 47n))),
+    u => Maybe.map(&2, Nat, N.Num, N.Num.from_nat, Js.radix.go(ds, radix, 0n)),
+    u => None{})
+
 def Js.number.sign(s: String) -> Maybe<&2, N.Num>:
   match s:
     case SNil{}:
       Some{N.Num.zero()}
+    case SCon{'0', SCon{'x', t}}:
+      Js.radix(t, 16)
+    case SCon{'0', SCon{'X', t}}:
+      Js.radix(t, 16)
+    case SCon{'0', SCon{'o', t}}:
+      Js.radix(t, 8)
+    case SCon{'0', SCon{'O', t}}:
+      Js.radix(t, 8)
+    case SCon{'0', SCon{'b', t}}:
+      Js.radix(t, 2)
+    case SCon{'0', SCon{'B', t}}:
+      Js.radix(t, 2)
     case SCon{'-', t}:
       Js.number.whole(True{}, Js.digits(t))
     case SCon{'+', t}:
@@ -204,11 +240,11 @@ def Js.number.sign(s: String) -> Maybe<&2, N.Num>:
     case other:
       Js.number.whole(False{}, Js.digits(other))
 
-# `Number(text)` for decimal literals: surrounding whitespace, a sign,
-# digits, a point, an exponent; the empty string is 0. None where JS answers
-# NaN, and also for `Infinity`, for hexadecimal, octal and binary literals
-# and for a value with more than 14 significant digits, which the exact
-# `Num` cannot hold.
+# `Number(text)`: surrounding whitespace, then a decimal literal (a sign,
+# digits, a point, an exponent) or an unsigned hexadecimal, octal or binary
+# one; the empty string is 0. None where JS answers NaN, and also for
+# `Infinity` and for a value the exact `Num` cannot hold (more than 14
+# significant digits, or past 2^48), where JS would round.
 def Js.number(s: String) -> Maybe<&2, N.Num>:
   Js.number.sign(Js.trim(s))
 

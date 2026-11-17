@@ -22,8 +22,8 @@
 # are the ends of the whole text and `.` stops at a line terminator.
 #
 # Other differences from JS:
-# - A text is a list of code points, so a character outside the Basic
-#   Multilingual Plane is one character where JS (without `u`) sees two.
+# - Pattern and text are walked as UTF-16 code units, as JS does without the
+#   `u` flag: a character past U+FFFF counts as its two surrogates.
 # - Case-insensitive matching folds ASCII, Latin-1, Greek and Cyrillic.
 # - A syntax error is `Fail{"invalid: ..."}`; the wording is not V8's.
 # - The search is bounded by a step budget of 2^40 along any one path, which
@@ -41,7 +41,7 @@ type Regex.Item is Data:
   Class{kind: U32}
 
 type Regex.Node is Data:
-  Empty{}
+  Nop{}
   # one character that is in the items (or, with neg, is not)
   One{neg: Bool, items: List<&2, Regex.Item>}
   Bol{}
@@ -53,7 +53,7 @@ type Regex.Node is Data:
   # node repeated min to max times, without limit when inf
   Rep{node: Regex.Node, min: Nat, max: Nat, inf: Bool}
   # (?=node), or with neg (?!node)
-  Look{neg: Bool, node: Regex.Node}
+  Ahead{neg: Bool, node: Regex.Node}
   # used by the matcher: one optional round of a Rep was started with len
   # characters left
   Iter{node: Regex.Node, max: Nat, inf: Bool, len: Nat}
@@ -108,7 +108,7 @@ def Regex.head(s: String) -> U32:
   match s:
     case SNil{}:
       Regex.none()
-    case SCon{Chr{x}, t}:
+    case SCon{Chr{x}, +t}:
       x
 
 def Regex.at_word_edge(+prev: U32, s: String) -> Bool:
@@ -124,7 +124,7 @@ def Regex.go(+fuel: Nat, todo: List<&2, Regex.Node>, +s: String, +prev: U32, +le
       match todo:
         case Nil{}:
           True{}
-        case Con{Empty{}, rest}:
+        case Con{Nop{}, rest}:
           Regex.go(g, rest, s, prev, len, ic)
         case Con{One{neg, items}, +rest}:
           match s:
@@ -156,7 +156,7 @@ def Regex.go(+fuel: Nat, todo: List<&2, Regex.Node>, +s: String, +prev: U32, +le
                 u => C.If(Bool, Regex.go(g, Con{node, Con{Iter{node, Nat.sub(max, 1n), inf, len}, rest}}, s, prev, len, ic),
                   u => True{},
                   u => Regex.go(g, rest, s, prev, len, ic)))
-        case Con{Look{neg, node}, +rest}:
+        case Con{Ahead{neg, node}, +rest}:
           C.If(Bool, Bool.xor(neg, Regex.go(g, [node], s, prev, len, ic)),
             u => Regex.go(g, rest, s, prev, len, ic),
             u => False{})
@@ -178,9 +178,24 @@ def Regex.search(s: String, +node: Regex.Node, +prev: U32, +len: Nat, +ic: Bool)
         u => True{},
         u => Regex.search(t, node, x, Nat.sub(len, 1n), ic))
 
-# Whether a compiled pattern matches somewhere in s; `ic` is the `i` flag.
-def Regex.exec(node: Regex.Node, ic: Bool, +s: String) -> Bool:
+# The text as UTF-16 code units, which is what a JS pattern without the `u`
+# flag walks: a character past U+FFFF becomes its two surrogates.
+def Regex.utf16(s: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{Chr{+x}, +t}:
+      C.If(String, (x >= 65536 : U32),
+        u => SCon{Chr{(55296 + ((x - 65536 : U32) >> 10n : U32) : U32)},
+          SCon{Chr{(56320 + ((x - 65536 : U32) .&. 1023 : U32) : U32)}, Regex.utf16(t)}},
+        u => SCon{Chr{x}, Regex.utf16(t)})
+
+def Regex.exec.units(node: Regex.Node, ic: Bool, +s: String) -> Bool:
   Regex.search(s, node, Regex.none(), String.length(s), ic)
+
+# Whether a compiled pattern matches somewhere in s; `ic` is the `i` flag.
+def Regex.exec(node: Regex.Node, ic: Bool, s: String) -> Bool:
+  Regex.exec.units(node, ic, Regex.utf16(s))
 
 # ---------------------------------------------------------------------------
 # Parsing
@@ -203,8 +218,8 @@ type Regex.Esc is Data:
 type Regex.Hex is Data:
   Hex{value: U32, rest: String}
 
-type Regex.Quant is Data:
-  Quant{min: Nat, max: Nat, inf: Bool, rest: String}
+type Regex.Times is Data:
+  Times{min: Nat, max: Nat, inf: Bool, rest: String}
 
 def Regex.char(+x: U32) -> Regex.Node:
   One{False{}, [Range{x, x}]}
@@ -220,7 +235,7 @@ def Regex.seq.go(rev: List<&2, Regex.Node>, acc: Regex.Node) -> Regex.Node:
 def Regex.seq(rev: List<&2, Regex.Node>) -> Regex.Node:
   match rev:
     case Nil{}:
-      Empty{}
+      Nop{}
     case Con{h, t}:
       Regex.seq.go(t, h)
 
@@ -266,7 +281,7 @@ def Regex.hex(n: Nat, s: String, +acc: U32) -> Maybe<&2, Regex.Hex>:
       Some{Hex{acc, rest}}
     case 1n+m SNil{}:
       None{}
-    case 1n+m SCon{Chr{+x}, t}:
+    case 1n+m SCon{Chr{+x}, +t}:
       Regex.hex.next(Regex.hex_value(x),
         acc, Regex.hex(m, t, (acc * 16 + Maybe.default(&2, U32, Regex.hex_value(x), 0) : U32)))
 
@@ -297,44 +312,44 @@ def Regex.escape(s: String, cls: Bool) -> Result<&2, &2, String, Regex.Esc>:
   match s:
     case SNil{}:
       Fail{"invalid: \\ at end of pattern"}
-    case SCon{'d', t}:
+    case SCon{'d', +t}:
       Done{Esc{1, 0, t}}
-    case SCon{'D', t}:
+    case SCon{'D', +t}:
       Done{Esc{1, 1, t}}
-    case SCon{'w', t}:
+    case SCon{'w', +t}:
       Done{Esc{1, 2, t}}
-    case SCon{'W', t}:
+    case SCon{'W', +t}:
       Done{Esc{1, 3, t}}
-    case SCon{'s', t}:
+    case SCon{'s', +t}:
       Done{Esc{1, 4, t}}
-    case SCon{'S', t}:
+    case SCon{'S', +t}:
       Done{Esc{1, 5, t}}
-    case SCon{'b', t}:
+    case SCon{'b', +t}:
       Bool.pick(Result<&2, &2, String, Regex.Esc>, cls, Done{Esc{0, 8, t}}, Done{Esc{2, 0, t}})
-    case SCon{'B', t}:
+    case SCon{'B', +t}:
       Bool.pick(Result<&2, &2, String, Regex.Esc>, cls, Done{Esc{0, 66, t}}, Done{Esc{2, 1, t}})
-    case SCon{'t', t}:
+    case SCon{'t', +t}:
       Done{Esc{0, 9, t}}
-    case SCon{'n', t}:
+    case SCon{'n', +t}:
       Done{Esc{0, 10, t}}
-    case SCon{'v', t}:
+    case SCon{'v', +t}:
       Done{Esc{0, 11, t}}
-    case SCon{'f', t}:
+    case SCon{'f', +t}:
       Done{Esc{0, 12, t}}
-    case SCon{'r', t}:
+    case SCon{'r', +t}:
       Done{Esc{0, 13, t}}
-    case SCon{'0', t}:
+    case SCon{'0', +t}:
       Regex.esc.zero(t)
     case SCon{'x', +t}:
       Regex.esc.hex(Regex.hex(2n, t, 0), 120, t)
     case SCon{'u', +t}:
       Regex.esc.hex(Regex.hex(4n, t, 0), 117, t)
-    case SCon{'c', t}:
+    case SCon{'c', +t}:
       Regex.esc.control(t)
     case SCon{'k', +t}:
       Bool.pick(Result<&2, &2, String, Regex.Esc>, U32.is_eq(Regex.head(t), 60),
         Fail{"unsupported: named backreference"}, Done{Esc{0, 107, t}})
-    case SCon{Chr{+x}, t}:
+    case SCon{Chr{+x}, +t}:
       Bool.pick(Result<&2, &2, String, Regex.Esc>, T.Text.within(x, 49, 57),
         Fail{"unsupported: backreference or octal escape"}, Done{Esc{0, x, t}})
 
@@ -345,9 +360,9 @@ def Regex.class.atom(s: String) -> Result<&2, &2, String, Regex.Esc>:
   match s:
     case SNil{}:
       Fail{"invalid: unterminated character class"}
-    case SCon{'\\', t}:
+    case SCon{'\\', +t}:
       Regex.escape(t, True{})
-    case SCon{Chr{x}, t}:
+    case SCon{Chr{x}, +t}:
       Done{Esc{0, x, t}}
 
 def Regex.class.item(kind: U32, +code: U32) -> Regex.Item:
@@ -378,7 +393,7 @@ def Regex.class.after(+items: List<&2, Regex.Item>, a: Result<&2, &2, String, Re
   match a:
     case Fail{e}:
       Fail{e}
-    case Done{Esc{+ak, +ac, SCon{'-', SCon{']', t}}}}:
+    case Done{Esc{+ak, +ac, SCon{'-', SCon{']', +t}}}}:
       Done{ClassOf{Con{Regex.class.item(ak, ac), items}, SCon{'-', SCon{']', t}}}}
     case Done{Esc{+ak, +ac, SCon{'-', SCon{c, t}}}}:
       Regex.class.range(items, ak, ac, Regex.class.atom(SCon{c, t}))
@@ -392,7 +407,7 @@ def Regex.class.go(+fuel: Nat, r: Result<&2, &2, String, Regex.Class>) -> Result
       Fail{"invalid: unterminated character class"}
     case 1n+g Fail{e}:
       Fail{e}
-    case 1n+g Done{ClassOf{items, SCon{']', t}}}:
+    case 1n+g Done{ClassOf{items, SCon{']', +t}}}:
       Done{ClassOf{items, t}}
     case 1n+g Done{ClassOf{+items, rest}}:
       Regex.class.go(g, Regex.class.after(items, Regex.class.atom(rest)))
@@ -406,39 +421,228 @@ def Regex.class.node(neg: Bool, r: Result<&2, &2, String, Regex.Class>, stack: L
       Regex.done(rest, Regex.push(stack, One{neg, items}, True{}))
 
 # The class whose "[" was just read.
-def Regex.class(s: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+def Regex.class(+s: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
   match s:
     case SCon{'^', +t}:
       Regex.class.node(True{}, Regex.class.go(1n+String.length(t), Done{ClassOf{Nil{}, t}}), stack)
-    case +other:
-      Regex.class.node(False{}, Regex.class.go(1n+String.length(other), Done{ClassOf{Nil{}, other}}), stack)
+    case other:
+      Regex.class.node(False{}, Regex.class.go(1n+String.length(s), Done{ClassOf{Nil{}, s}}), stack)
 
 # --- quantifiers
 
 def Regex.quantify(stack: List<&2, Regex.Frame>, min: Nat, max: Nat, inf: Bool, rest: String) ->
   Result<&2, &2, String, Regex.State>:
   match stack rest:
-    case Con{Frame{kind, alts, Con{last, seq}, True{}}, more} SCon{'?', t}:
+    case Con{Frame{kind, alts, Con{last, seq}, True{}}, more} SCon{'?', +t}:
       Regex.done(t, Con{Frame{kind, alts, Con{Rep{last, min, max, inf}, seq}, False{}}, more})
     case Con{Frame{kind, alts, Con{last, seq}, True{}}, more} t:
       Regex.done(t, Con{Frame{kind, alts, Con{Rep{last, min, max, inf}, seq}, False{}}, more})
     case _ _:
       Fail{"invalid: nothing to repeat"}
 
-def Regex.digits.put(c: Char, r: Regex.State) -> Regex.State:
-  match r:
-    case State{rest, stack}:
-      State{rest, stack}
+type Regex.Run is Data:
+  Run{digits: String, rest: String}
 
 def Regex.count(+ds: String) -> Nat:
   Bool.pick(Nat, Nat.is_le(String.length(ds), 9n), Maybe.default(&2, Nat, Nat.read(ds), 0n), 999999999n)
 
 # The digits at the start of s (newest first in acc), and what follows.
-def Regex.digits(s: String, acc: String) -> RuleCut:
+def Regex.digits(s: String, +acc: String) -> Regex.Run:
   match s:
     case SNil{}:
-      RuleCut{String.reverse(acc), SNil{}}
+      Run{String.reverse(acc), SNil{}}
     case SCon{Chr{+x}, +t}:
-      C.If(RuleCut, T.Text.within(x, 48, 57),
+      C.If(Regex.Run, T.Text.within(x, 48, 57),
         u => Regex.digits(t, SCon{Chr{x}, acc}),
-        u => RuleCut{String.reverse(acc), SCon{Chr{x}, t}})
+        u => Run{String.reverse(acc), SCon{Chr{x}, t}})
+
+def Regex.brace.upper(+n: Nat, r: Regex.Run) -> Maybe<&2, Regex.Times>:
+  match r:
+    case Run{+ds, SCon{'}', +t}}:
+      Bool.pick(Maybe<&2, Regex.Times>, String.is_empty(ds), Some{Times{n, 0n, True{}, t}},
+        Some{Times{n, Regex.count(ds), False{}, t}})
+    case other:
+      None{}
+
+def Regex.brace.lower(r: Regex.Run) -> Maybe<&2, Regex.Times>:
+  match r:
+    case Run{SNil{}, rest}:
+      None{}
+    case Run{+ds, SCon{'}', +t}}:
+      Some{Times{Regex.count(ds), Regex.count(ds), False{}, t}}
+    case Run{ds, SCon{',', +t}}:
+      Regex.brace.upper(Regex.count(ds), Regex.digits(t, SNil{}))
+    case other:
+      None{}
+
+# {n}, {n,} or {n,m} after its "{"; None when the text is not one of them.
+def Regex.brace(s: String) -> Maybe<&2, Regex.Times>:
+  Regex.brace.lower(Regex.digits(s, SNil{}))
+
+def Regex.brace.apply(q: Maybe<&2, Regex.Times>, t: String, +stack: List<&2, Regex.Frame>) ->
+  Result<&2, &2, String, Regex.State>:
+  match q:
+    case None{}:
+      Regex.done(t, Regex.push(stack, Regex.char(123), True{}))
+    case Some{Times{+min, +max, +inf, +rest}}:
+      C.If(Result<&2, &2, String, Regex.State>, Bool.and(Bool.not(inf), Nat.is_gt(min, max)),
+        u => Fail{"invalid: numbers out of order in {} quantifier"},
+        u => Regex.quantify(stack, min, max, inf, rest))
+
+# --- groups
+
+def Regex.frame(kind: U32) -> Regex.Frame:
+  Frame{kind, Nil{}, Nil{}, False{}}
+
+# The text after the ">" that ends a group name.
+def Regex.name(s: String) -> Maybe<&2, String>:
+  match s:
+    case SNil{}:
+      None{}
+    case SCon{'>', +t}:
+      Some{t}
+    case SCon{c, t}:
+      Regex.name(t)
+
+def Regex.open.named(r: Maybe<&2, String>, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+  match r:
+    case None{}:
+      Fail{"invalid: group name"}
+    case Some{t}:
+      Regex.done(t, Con{Regex.frame(1), stack})
+
+# The group whose "(" was just read.
+def Regex.open(s: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+  match s:
+    case SCon{'?', SCon{':', r}}:
+      Regex.done(r, Con{Regex.frame(1), stack})
+    case SCon{'?', SCon{'=', r}}:
+      Regex.done(r, Con{Regex.frame(2), stack})
+    case SCon{'?', SCon{'!', r}}:
+      Regex.done(r, Con{Regex.frame(3), stack})
+    case SCon{'?', SCon{'<', SCon{'=', r}}}:
+      Fail{"unsupported: lookbehind"}
+    case SCon{'?', SCon{'<', SCon{'!', r}}}:
+      Fail{"unsupported: lookbehind"}
+    case SCon{'?', SCon{'<', r}}:
+      Regex.open.named(Regex.name(r), stack)
+    case SCon{'?', r}:
+      Fail{"invalid: group"}
+    case other:
+      Regex.done(other, Con{Regex.frame(1), stack})
+
+def Regex.wrap(kind: U32, node: Regex.Node) -> Regex.Node:
+  match kind:
+    case 2:
+      Ahead{False{}, node}
+    case 3:
+      Ahead{True{}, node}
+    case other:
+      node
+
+def Regex.close(t: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+  match stack:
+    case Con{Frame{kind, alts, seq, q}, Con{parent, more}}:
+      Regex.done(t, Regex.push(Con{parent, more}, Regex.wrap(kind, Regex.finish(alts, seq)), True{}))
+    case other:
+      Fail{"invalid: unmatched )"}
+
+def Regex.bar(t: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+  match stack:
+    case Nil{}:
+      Regex.done(t, [Frame{0, [Nop{}], Nil{}, False{}}])
+    case Con{Frame{kind, alts, seq, q}, more}:
+      Regex.done(t, Con{Frame{kind, Con{Regex.seq(seq), alts}, Nil{}, False{}}, more})
+
+def Regex.esc.node(kind: U32, +code: U32) -> Regex.Node:
+  match kind:
+    case 0:
+      Regex.char(code)
+    case 1:
+      One{False{}, [Class{code}]}
+    case other:
+      Word{U32.is_eq(code, 1)}
+
+def Regex.step.escape(e: Result<&2, &2, String, Regex.Esc>, stack: List<&2, Regex.Frame>) ->
+  Result<&2, &2, String, Regex.State>:
+  match e:
+    case Fail{m}:
+      Fail{m}
+    case Done{Esc{+kind, code, rest}}:
+      Regex.done(rest, Regex.push(stack, Regex.esc.node(kind, code), U32.is_ne(kind, 2)))
+
+# Reads one token of the pattern into the stack of open groups.
+def Regex.step(s: String, stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.State>:
+  match s:
+    case SNil{}:
+      Regex.done(SNil{}, stack)
+    case SCon{'(', +t}:
+      Regex.open(t, stack)
+    case SCon{')', +t}:
+      Regex.close(t, stack)
+    case SCon{'|', +t}:
+      Regex.bar(t, stack)
+    case SCon{'*', +t}:
+      Regex.quantify(stack, 0n, 0n, True{}, t)
+    case SCon{'+', +t}:
+      Regex.quantify(stack, 1n, 0n, True{}, t)
+    case SCon{'?', +t}:
+      Regex.quantify(stack, 0n, 1n, False{}, t)
+    case SCon{'{', +t}:
+      Regex.brace.apply(Regex.brace(t), t, stack)
+    case SCon{'[', +t}:
+      Regex.class(t, stack)
+    case SCon{'\\', +t}:
+      Regex.step.escape(Regex.escape(t, False{}), stack)
+    case SCon{'^', +t}:
+      Regex.done(t, Regex.push(stack, Bol{}, False{}))
+    case SCon{'$', +t}:
+      Regex.done(t, Regex.push(stack, Eol{}, False{}))
+    case SCon{'.', +t}:
+      Regex.done(t, Regex.push(stack, One{True{}, [Range{10, 10}, Range{13, 13}, Range{8232, 8233}]}, True{}))
+    case SCon{Chr{x}, +t}:
+      Regex.done(t, Regex.push(stack, Regex.char(x), True{}))
+
+def Regex.parse.end(stack: List<&2, Regex.Frame>) -> Result<&2, &2, String, Regex.Node>:
+  match stack:
+    case Nil{}:
+      Done{Nop{}}
+    case Con{Frame{kind, alts, seq, q}, Nil{}}:
+      Done{Regex.finish(alts, seq)}
+    case other:
+      Fail{"invalid: unterminated group"}
+
+def Regex.parse.go(fuel: Nat, st: Result<&2, &2, String, Regex.State>) -> Result<&2, &2, String, Regex.Node>:
+  match fuel st:
+    case 0n _:
+      Fail{"invalid: pattern"}
+    case 1n+g Fail{e}:
+      Fail{e}
+    case 1n+g Done{State{SNil{}, stack}}:
+      Regex.parse.end(stack)
+    case 1n+g Done{State{rest, stack}}:
+      Regex.parse.go(g, Regex.step(rest, stack))
+
+# The pattern as a node, or why it is not one: "invalid: ..." for what JS
+# refuses with a SyntaxError, "unsupported: ..." for what this matcher lacks.
+def Regex.compile.units(+src: String) -> Result<&2, &2, String, Regex.Node>:
+  Regex.parse.go(2n+String.length(src), Done{State{src, [Regex.frame(0)]}})
+
+def Regex.compile(src: String) -> Result<&2, &2, String, Regex.Node>:
+  Regex.compile.units(Regex.utf16(src))
+
+def Regex.run(r: Result<&2, &2, String, Regex.Node>, ic: Bool, s: String) -> Bool:
+  match r:
+    case Fail{e}:
+      False{}
+    case Done{node}:
+      Regex.exec(node, ic, s)
+
+# JS `new RegExp(source).test(s)`, with False for a pattern that does not
+# compile.
+def Regex.test(source: String, s: String) -> Bool:
+  Regex.run(Regex.compile(source), False{}, s)
+
+# JS `new RegExp(source, 'i').test(s)`.
+def Regex.test_i(source: String, s: String) -> Bool:
+  Regex.run(Regex.compile(source), True{}, s)

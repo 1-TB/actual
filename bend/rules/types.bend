@@ -43,10 +43,11 @@ def RuleError.message(e: RuleError) -> String:
     case RuleError{kind, message}:
       "RuleError: " ++ message
 
+# The error's type, then its JS message.
 def RuleError.show(e: RuleError) -> String:
   match e:
     case RuleError{kind, message}:
-      kind ++ ": " ++ message
+      kind ++ ": RuleError: " ++ message
 
 # `Condition.getValue()` as the JS object it is.
 def Parsed.to_value(p: Parsed) -> V.Value:
