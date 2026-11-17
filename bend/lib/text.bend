@@ -82,3 +82,12 @@ def Text.field(s: String, from: Nat, +len: Nat) -> Maybe<&2, Nat>:
 # True when the character at index i of s is c.
 def Text.at(s: String, i: Nat, c: Char) -> Bool:
   Char.is_eq(Maybe.default(&2, Char, String.get(s, i), Chr{0}), c)
+
+def Text.within(+x: U32, lo: U32, hi: U32) -> Bool:
+  Bool.and(U32.is_ge(x, lo), U32.is_le(x, hi))
+
+# Whether a code point is whitespace to a JS regular expression's `\s`.
+def Text.is_js_space(+x: U32) -> Bool:
+  Text.within(x, 9, 13) || U32.is_eq(x, 32) || U32.is_eq(x, 160) || U32.is_eq(x, 5760) ||
+    Text.within(x, 8192, 8202) || U32.is_eq(x, 8232) || U32.is_eq(x, 8233) ||
+    U32.is_eq(x, 8239) || U32.is_eq(x, 8287) || U32.is_eq(x, 12288) || U32.is_eq(x, 65279)
