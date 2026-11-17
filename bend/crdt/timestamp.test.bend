@@ -101,5 +101,50 @@ def sending() -> List<&2, T.Test.Check>:
     T.Check{"clock drift", result(send(step(node1(), send(node1(), 400001n)), 100000n)),
       "error: maximum clock drift exceeded 400001 100000 300000"} ]
 
+def receiving() -> List<&2, T.Test.Check>:
+  +r0_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.051Z-0000-0000000000000002", 52n))
+  +r0_1 = step(r0_0, recv(r0_0, "1970-01-01T00:00:00.053Z-0000-0000000000000002", 54n))
+  +r0_2 = step(r0_1, recv(r0_1, "1970-01-01T00:00:00.055Z-0000-0000000000000002", 56n))
+  +r1_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.062Z-0000-0000000000000002", 61n))
+  +r1_1 = step(r1_0, recv(r1_0, "1970-01-01T00:00:00.062Z-0001-0000000000000002", 62n))
+  +r1_2 = step(r1_1, recv(r1_1, "1970-01-01T00:00:00.062Z-0002-0000000000000002", 62n))
+  +r1_3 = step(r1_2, recv(r1_2, "1970-01-01T00:00:00.062Z-0004-0000000000000002", 63n))
+  +r2_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.071Z-0000-0000000000000002", 73n))
+  +r2_1 = step(r2_0, recv(r2_0, "1970-01-01T00:00:00.072Z-0000-0000000000000002", 73n))
+  +r2_2 = step(r2_1, recv(r2_1, "1970-01-01T00:00:00.073Z-0000-0000000000000002", 74n))
+  +r3_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.083Z-0000-0000000000000002", 81n))
+  +r3_1 = step(r3_0, recv(r3_0, "1970-01-01T00:00:00.083Z-0001-0000000000000002", 82n))
+  +r3_2 = step(r3_1, recv(r3_1, "1970-01-01T00:00:00.083Z-0002-0000000000000002", 83n))
+  +r3_3 = step(r3_2, recv(r3_2, "1970-01-01T00:00:00.083Z-0003-0000000000000002", 84n))
+  +r4_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.091Z-0000-0000000000000002", 93n))
+  +r4_1 = step(r4_0, recv(r4_0, "1970-01-01T00:00:00.092Z-0000-0000000000000002", 92n))
+  +r4_2 = step(r4_1, recv(r4_1, "1970-01-01T00:00:00.093Z-0000-0000000000000002", 91n))
+  +r5_0 = step(node1(), recv(node1(), "1970-01-01T00:00:00.103Z-0000-0000000000000002", 101n))
+  +r5_1 = step(r5_0, recv(r5_0, "1970-01-01T00:00:00.102Z-0000-0000000000000002", 102n))
+  +r5_2 = step(r5_1, recv(r5_1, "1970-01-01T00:00:00.101Z-0000-0000000000000002", 103n))
+  [
+    T.Check{"recv global monotonic 1", S.Timestamp.show(r0_0), "1970-01-01T00:00:00.052Z-0000-0000000000000001"},
+    T.Check{"recv global monotonic 2", S.Timestamp.show(r0_1), "1970-01-01T00:00:00.054Z-0000-0000000000000001"},
+    T.Check{"recv global monotonic 3", S.Timestamp.show(r0_2), "1970-01-01T00:00:00.056Z-0000-0000000000000001"},
+    T.Check{"recv global stuttering 1", S.Timestamp.show(r1_0), "1970-01-01T00:00:00.062Z-0001-0000000000000001"},
+    T.Check{"recv global stuttering 2", S.Timestamp.show(r1_1), "1970-01-01T00:00:00.062Z-0002-0000000000000001"},
+    T.Check{"recv global stuttering 3", S.Timestamp.show(r1_2), "1970-01-01T00:00:00.062Z-0003-0000000000000001"},
+    T.Check{"recv global stuttering 4", S.Timestamp.show(r1_3), "1970-01-01T00:00:00.063Z-0000-0000000000000001"},
+    T.Check{"recv local stuttering 1", S.Timestamp.show(r2_0), "1970-01-01T00:00:00.073Z-0000-0000000000000001"},
+    T.Check{"recv local stuttering 2", S.Timestamp.show(r2_1), "1970-01-01T00:00:00.073Z-0001-0000000000000001"},
+    T.Check{"recv local stuttering 3", S.Timestamp.show(r2_2), "1970-01-01T00:00:00.074Z-0000-0000000000000001"},
+    T.Check{"recv remote stuttering 1", S.Timestamp.show(r3_0), "1970-01-01T00:00:00.083Z-0001-0000000000000001"},
+    T.Check{"recv remote stuttering 2", S.Timestamp.show(r3_1), "1970-01-01T00:00:00.083Z-0002-0000000000000001"},
+    T.Check{"recv remote stuttering 3", S.Timestamp.show(r3_2), "1970-01-01T00:00:00.083Z-0003-0000000000000001"},
+    T.Check{"recv remote stuttering 4", S.Timestamp.show(r3_3), "1970-01-01T00:00:00.084Z-0000-0000000000000001"},
+    T.Check{"recv local regressing 1", S.Timestamp.show(r4_0), "1970-01-01T00:00:00.093Z-0000-0000000000000001"},
+    T.Check{"recv local regressing 2", S.Timestamp.show(r4_1), "1970-01-01T00:00:00.093Z-0001-0000000000000001"},
+    T.Check{"recv local regressing 3", S.Timestamp.show(r4_2), "1970-01-01T00:00:00.093Z-0002-0000000000000001"},
+    T.Check{"recv remote regressing 1", S.Timestamp.show(r5_0), "1970-01-01T00:00:00.103Z-0001-0000000000000001"},
+    T.Check{"recv remote regressing 2", S.Timestamp.show(r5_1), "1970-01-01T00:00:00.103Z-0002-0000000000000001"},
+    T.Check{"recv remote regressing 3", S.Timestamp.show(r5_2), "1970-01-01T00:00:00.103Z-0003-0000000000000001"},
+    T.Check{"recv clock drift", result(recv(node1(), "1980-01-01T00:00:00.101Z-0000-0000000000000002", 0n)),
+      "error: maximum clock drift exceeded"} ]
+
 def main() -> IO(Unit):
-  T.Test.run(List.concat(&2, T.Test.Check, [comparison(), parsing(), sending()]))
+  T.Test.run(List.concat(&2, T.Test.Check, [comparison(), parsing(), sending(), receiving()]))
