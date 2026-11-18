@@ -19,10 +19,12 @@
 # - The changes of `execActions` are the fields whose value differs by
 #   structure, where the TS compares arrays and objects by identity.
 # - Amounts are exact rationals. `Math.round(remainder * (percent / 100))` is
-#   computed exactly, so when that product is exactly halfway between two
-#   integers this port always rounds as the exact value does, while the JS
-#   float product can fall on either side (0.57 * 150 is 85.49999999999999).
-#   A percent that is not a number gives NaN in JS and `VNull` here.
+#   a float product in JS, which at an exact half can fall on either side
+#   (0.57 * 150 is 85.49999999999999). `Rule.float_off` reproduces that for a
+#   whole-number percent below 4096 and a remainder below 2^28; outside that,
+#   and for a fractional percent such as 33.3, the product is rounded exactly,
+#   which can differ from JS by one at an exact half. A percent that is not a
+#   number gives NaN in JS and `VNull` here.
 import Base
 import ../lib/core.bend as C
 import ../lib/int.bend as I
@@ -151,13 +153,103 @@ def Rule.rounded(m: Maybe<&2, N.Num>) -> V.Value:
     case Some{x}:
       V.Value.int(Maybe.default(&2, I.Int, N.Num.round(x, 0n), I.Int.zero()))
 
+# floor(log2 n) for n >= 1.
+def Rule.log2(fuel: Nat, +n: Nat) -> Nat:
+  match fuel:
+    case 0n:
+      0n
+    case 1n+g:
+      C.If(Nat, Nat.is_lt(n, 2n), u => 0n, u => 1n+Rule.log2(g, Nat.div(n, 2n)))
+
+def Rule.pow2(n: Nat) -> Nat:
+  match n:
+    case 0n:
+      1n
+    case 1n+m:
+      (2n * Rule.pow2(m) : Nat)
+
+# What is left of a division after some bits of the quotient were taken:
+# rem / den of a unit in the last place, and whether the last bit was 1.
+type Rule.Quot is Data:
+  Quot{rem: Nat, den: Nat, odd: Bool}
+
+# n more bits of rem / den.
+def Rule.bits(n: Nat, +rem: Nat, +den: Nat, odd: Bool) -> Rule.Quot:
+  match n:
+    case 0n:
+      Quot{rem, den, odd}
+    case 1n+m:
+      Rule.bits(m, Nat.sub((rem * 2n : Nat), Bool.pick(Nat, Nat.is_ge((rem * 2n : Nat), den), den, 0n)), den,
+        Nat.is_ge((rem * 2n : Nat), den))
+
+# The smallest n with v * 2^n >= 100.
+def Rule.shift_up(fuel: Nat, +v: Nat) -> Nat:
+  match fuel:
+    case 0n:
+      0n
+    case 1n+g:
+      C.If(Nat, Nat.is_ge(v, 100n), u => 0n, u => 1n+Rule.shift_up(g, (v * 2n : Nat)))
+
+# Whether the double product r * (v / 100) lands on the far side of the tie
+# it should hit. `eo` is 64 plus the exponent of v / 100, `to` 64 plus that
+# of the exact product; q is what rounding v / 100 to 53 bits left over.
+def Rule.float_off.at(q: Rule.Quot, +r: Nat, +eo: Nat, +to: Nat, neg: Bool) -> Bool:
+  match q:
+    case Quot{+rem, +den, odd}:
+      +twice = (rem * 2n : Nat)
+      +up = Bool.or(Nat.is_gt(twice, den), Bool.and(Nat.is_eq(twice, den), odd))
+      +miss = (r * Bool.pick(Nat, up, Nat.sub(den, rem), rem) : Nat)
+      +far = Bool.pick(Bool, Nat.is_ge(1n+eo, to),
+        Nat.is_gt((miss * Rule.pow2(C.Nat.lo(Nat.sub(1n+eo, to), 6n)) : Nat), den),
+        Nat.is_gt(miss, (den * Rule.pow2(C.Nat.lo(Nat.sub(to, 1n+eo), 30n)) : Nat)))
+      Bool.and(far, Bool.pick(Bool, neg, up, Bool.not(up)))
+
+# JS computes `remaining * (value / 100)` in doubles. When the exact product
+# is halfway between two integers the double can fall just short of it or
+# just past it, and `Math.round` then differs from exact rounding by one.
+# This says whether it does, for |remaining| = r below 2^28 and an integer
+# |value| = v below 4096; `neg` is the sign of the product.
+def Rule.float_off.tie(+r: Nat, +v: Nat, +neg: Bool) -> Bool:
+  +up = Rule.shift_up(8n, v)
+  +e = Rule.log2(48n, Nat.div(v, 100n))
+  +to = (63n + Rule.log2(48n, Nat.div((r * v : Nat), 50n)) : Nat)
+  C.If(Bool, Nat.is_eq(Nat.mod((r * v : Nat), 100n), 50n),
+    u => C.If(Bool, Nat.is_ge(v, 100n),
+      u => Rule.float_off.at(
+        Rule.bits(52n, Nat.sub(v, (100n * Rule.pow2(e) : Nat)), (100n * Rule.pow2(e) : Nat), True{}),
+        r, (64n + e : Nat), to, neg),
+      u => Rule.float_off.at(Rule.bits(52n, Nat.sub((v * Rule.pow2(up) : Nat), 100n), 100n, True{}),
+        r, Nat.sub(64n, up), to, neg)),
+    u => False{})
+
+def Rule.float_off(+r: Nat, +v: Nat, +neg: Bool) -> Bool:
+  C.If(Bool, Bool.and(Bool.and(Nat.is_gt(v, 0n), Nat.is_lt(v, 4096n)), Nat.is_lt(r, 268435456n)),
+    u => Rule.float_off.tie(r, v, neg),
+    u => False{})
+
+def Rule.percent.fix(exact: V.Value, off: Bool) -> V.Value:
+  match exact off:
+    case V.VNum{n} True{}:
+      V.VNum{Maybe.default(&2, N.Num, N.Num.sub(n, N.Num.from_nat(1n)), N.Num.zero())}
+    case other _:
+      other
+
+def Rule.percent.off(remaining: N.Num, v: N.Num) -> Bool:
+  match remaining v:
+    case N.Num{s, r, 1n} N.Num{t, p, 1n}:
+      Rule.float_off(r, p, Bool.xor(s, t))
+    case _ _:
+      False{}
+
 # Math.round(remaining * (value / 100))
-def Rule.percent(remaining: N.Num, value: Maybe<&2, N.Num>) -> V.Value:
+def Rule.percent(+remaining: N.Num, value: Maybe<&2, N.Num>) -> V.Value:
   match value:
     case None{}:
       V.VNull{}
-    case Some{v}:
-      Rule.rounded(Maybe.bind(&2, N.Num, N.Num, N.Num.mul(remaining, v), p => N.Num.div(p, N.Num.from_nat(100n))))
+    case Some{+v}:
+      Rule.percent.fix(
+        Rule.rounded(Maybe.bind(&2, N.Num, N.Num, N.Num.mul(remaining, v), p => N.Num.div(p, N.Num.from_nat(100n)))),
+        Rule.percent.off(remaining, v))
 
 # Gives each fixed-percent part its share of what the fixed amounts left.
 def Rule.percents(actions: List<&2, Y.Action>, +nt: List<&2, List<&2, V.Field>>, +remaining: N.Num) ->
